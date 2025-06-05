@@ -1,4 +1,4 @@
-from kiteconnect import KiteConnect
+from manager import kite_manager
 from strategies.rsi_strategy import rsi_strategy_with_filters
 from strategies.moving_average_strategy import moving_average_strategy_with_filters
 from strategies.bollinger_bands_strategy import bollinger_bands_strategy_with_rsi
@@ -9,17 +9,21 @@ import pandas as pd
 import time
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
 
-# Configure logging
-logging.basicConfig(
-    filename="strategy_manager.log",
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+# Import enhanced modules
+from utils.logger import Logger
+from utils.risk_manager import (
+    place_order, 
+    check_stop_losses_and_take_profits,
+    get_strategy_performance,
+    get_risk_exposure
 )
 
+# Initialize enhanced logger
+logger = Logger(console_output=True, file_output=True)
+
 # Initialize Kite Connect
-kite = KiteConnect(api_key="your_api_key")
+# kite = KiteConnect(api_key="your_api_key")
 
 def get_instrument_token(stock_symbol):
     """
@@ -28,14 +32,14 @@ def get_instrument_token(stock_symbol):
     retries = 3
     for attempt in range(retries):
         try:
-            instruments = kite.instruments("NSE")
+            instruments = kite_manager.get_instruments("NSE")
             for instrument in instruments:
                 if instrument["tradingsymbol"] == stock_symbol:
                     return instrument["instrument_token"]
-            logging.error(f"Instrument token not found for {stock_symbol}")
+            logger.error(f"Instrument token not found for {stock_symbol}")
             return None
         except Exception as e:
-            logging.error(f"Error fetching instrument token for {stock_symbol} (Attempt {attempt + 1}/{retries}): {e}")
+            logger.error(f"Error fetching instrument token for {stock_symbol} (Attempt {attempt + 1}/{retries}): {e}")
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)  # Exponential backoff
             else:
@@ -49,7 +53,7 @@ def fetch_real_time_data(stock_symbols, interval="5minute", days=1):
     stock_data = {}
 
     if not stock_symbols:
-        logging.error("No stock symbols provided for fetching data.")
+        logger.error("No stock symbols provided for fetching data.")
         return None  # Return None if no symbols are provided
 
     # Prepare batch request for LTP
@@ -57,15 +61,15 @@ def fetch_real_time_data(stock_symbols, interval="5minute", days=1):
 
     for attempt in range(retries):
         try:
-            # Fetch LTP for all stocks in a single request
-            ltp_data = kite.ltp(ltp_request)
+            # Fetch LTP for all stocks in a single request using kite_manager
+            ltp_data = kite_manager.get_ltp(ltp_request)
             for stock_symbol in stock_symbols:
                 ltp_key = f"NSE:{stock_symbol}"
                 if ltp_key in ltp_data:
                     ltp = ltp_data[ltp_key]["last_price"]
                     stock_data[stock_symbol] = {"ltp": ltp}
                 else:
-                    logging.warning(f"LTP not found for {stock_symbol}")
+                    logger.warning(f"LTP not found for {stock_symbol}")
                     stock_data[stock_symbol] = {"ltp": None}
 
             # Fetch historical data only for stocks with valid LTP
@@ -77,12 +81,13 @@ def fetch_real_time_data(stock_symbols, interval="5minute", days=1):
 
                 instrument_token = get_instrument_token(stock_symbol)
                 if not instrument_token:
-                    logging.warning(f"Instrument token not found for {stock_symbol}")
+                    logger.warning(f"Instrument token not found for {stock_symbol}")
                     stock_data[stock_symbol]["historical_data"] = None
                     continue
 
                 try:
-                    historical_data = kite.historical_data(
+                    # Use kite_manager for historical data
+                    historical_data = kite_manager.get_historical_data(
                         instrument_token=instrument_token,
                         from_date=start_date,
                         to_date=end_date,
@@ -91,7 +96,7 @@ def fetch_real_time_data(stock_symbols, interval="5minute", days=1):
 
                     # Validate and store historical data
                     if not historical_data or len(historical_data) == 0:
-                        logging.warning(f"No historical data fetched for {stock_symbol}")
+                        logger.warning(f"No historical data fetched for {stock_symbol}")
                         stock_data[stock_symbol]["historical_data"] = None
                     else:
                         df = pd.DataFrame(historical_data)
@@ -99,25 +104,140 @@ def fetch_real_time_data(stock_symbols, interval="5minute", days=1):
                         if required_columns.issubset(df.columns):
                             stock_data[stock_symbol]["historical_data"] = df
                         else:
-                            logging.warning(f"Missing required columns in historical data for {stock_symbol}")
+                            logger.warning(f"Missing required columns in historical data for {stock_symbol}")
                             stock_data[stock_symbol]["historical_data"] = None
                 except Exception as e:
-                    logging.error(f"Error fetching historical data for {stock_symbol}: {e}")
+                    logger.error(f"Error fetching historical data for {stock_symbol}: {e}")
                     stock_data[stock_symbol]["historical_data"] = None
 
-            logging.debug(f"Fetched data for stocks: {stock_data}")
+            logger.debug(f"Fetched data for stocks: {stock_data}")
             return stock_data
         except Exception as e:
-            logging.error(f"Error fetching data (Attempt {attempt + 1}/{retries}): {e}")
+            logger.error(f"Error fetching data (Attempt {attempt + 1}/{retries}): {e}")
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)  # Exponential backoff
             else:
                 return None
 
-    logging.error("Failed to fetch real-time data after retries.")
+    logger.error("Failed to fetch real-time data after retries.")
     return None  # Return None if all retries fail
 
-def process_stock(stock_symbol, stock_data, remaining_capital):
+def normalize_signal(signal):
+    """
+    Normalize different signal formats (string or dict) to a standard format
+    """
+    if isinstance(signal, str):
+        return {
+            "signal": signal,
+            "strength": 100 if signal in ["BUY", "SELL"] else 0
+        }
+    elif isinstance(signal, dict):
+        # If it's already a dict, ensure it has required fields
+        if "signal" not in signal:
+            if "signal_type" in signal:
+                signal["signal"] = signal["signal_type"]
+            else:
+                # Try to extract signal from common keys
+                for key in signal:
+                    if isinstance(signal[key], str) and signal[key] in ["BUY", "SELL", "HOLD"]:
+                        signal["signal"] = signal[key]
+                        break
+        
+        # Ensure strength/confidence is present
+        if "strength" not in signal and "confidence" in signal:
+            signal["strength"] = signal["confidence"]
+        elif "strength" not in signal:
+            signal["strength"] = 100 if signal.get("signal") in ["BUY", "SELL"] else 0
+            
+        return signal
+    else:
+        # Default for unknown format
+        return {"signal": "HOLD", "strength": 0}
+
+def aggregate_signals(signals_dict):
+    """
+    Aggregate signals from multiple strategies into a single decision
+    
+    Parameters:
+    - signals_dict: Dictionary of strategy results
+    
+    Returns:
+    - dict: Aggregated signal with strength and contributing strategies
+    """
+    # Initialize counters
+    buy_count = 0
+    sell_count = 0
+    hold_count = 0
+    buy_strength = 0
+    sell_strength = 0
+    
+    # Count signals by type and aggregate strengths
+    contributing_strategies = {"BUY": [], "SELL": [], "HOLD": []}
+    
+    for strategy_name, signal in signals_dict.items():
+        norm_signal = normalize_signal(signal)
+        signal_type = norm_signal.get("signal", "HOLD")
+        strength = norm_signal.get("strength", 0)
+        
+        if signal_type == "BUY":
+            buy_count += 1
+            buy_strength += strength
+            contributing_strategies["BUY"].append({
+                "strategy": strategy_name,
+                "strength": strength,
+                "details": norm_signal
+            })
+        elif signal_type == "SELL":
+            sell_count += 1
+            sell_strength += strength
+            contributing_strategies["SELL"].append({
+                "strategy": strategy_name,
+                "strength": strength,
+                "details": norm_signal
+            })
+        else:
+            hold_count += 1
+            contributing_strategies["HOLD"].append({
+                "strategy": strategy_name,
+                "details": norm_signal
+            })
+    
+    # Calculate average strengths
+    avg_buy_strength = buy_strength / buy_count if buy_count > 0 else 0
+    avg_sell_strength = sell_strength / sell_count if sell_count > 0 else 0
+    
+    # Decision logic based on counts and strengths
+    total_strategies = buy_count + sell_count + hold_count
+    
+    # Calculate agreement percentages
+    buy_agreement = (buy_count / total_strategies * 100) if total_strategies > 0 else 0
+    sell_agreement = (sell_count / total_strategies * 100) if total_strategies > 0 else 0
+    
+    # Make final decision based on voting and strength
+    if buy_count > sell_count and buy_agreement >= 40 and avg_buy_strength >= 60:
+        final_signal = "BUY"
+        final_strength = avg_buy_strength
+        contributors = contributing_strategies["BUY"]
+    elif sell_count > buy_count and sell_agreement >= 40 and avg_sell_strength >= 60:
+        final_signal = "SELL"
+        final_strength = avg_sell_strength
+        contributors = contributing_strategies["SELL"]
+    else:
+        final_signal = "HOLD"
+        final_strength = 0
+        contributors = contributing_strategies["HOLD"]
+    
+    return {
+        "signal": final_signal,
+        "strength": final_strength,
+        "agreement": buy_agreement if final_signal == "BUY" else (sell_agreement if final_signal == "SELL" else 0),
+        "contributing_strategies": contributors,
+        "buy_count": buy_count,
+        "sell_count": sell_count,
+        "hold_count": hold_count
+    }
+
+def process_stock(stock_symbol, stock_data):
     """
     Process strategies for a single stock symbol using pre-fetched data.
     """
@@ -126,61 +246,164 @@ def process_stock(stock_symbol, stock_data, remaining_capital):
     ltp = data.get("ltp")
 
     if df is None or df.empty or ltp is None:
-        logging.warning(f"Skipping {stock_symbol} due to data issues. DataFrame: {df}, LTP: {ltp}")
-        return stock_symbol, "HOLD", remaining_capital
+        logger.warning(f"Skipping {stock_symbol} due to data issues. DataFrame available: {df is not None}, LTP: {ltp}")
+        return stock_symbol, {"signal": "HOLD", "strength": 0, "reason": "DATA_ISSUE"}
 
     try:
-        # Validate remaining capital before computing quantity
-        if remaining_capital < ltp:
-            logging.warning(f"Insufficient capital for {stock_symbol}. Remaining capital: {remaining_capital}, LTP: {ltp}")
-            return stock_symbol, "HOLD", remaining_capital
-
-        # Compute quantity based on remaining capital
-        quantity = int(remaining_capital // ltp)
-        if quantity == 0:
-            logging.warning(f"Quantity is zero for {stock_symbol}. Remaining capital: {remaining_capital}, LTP: {ltp}")
-            return stock_symbol, "HOLD", remaining_capital
-
         # Run enhanced strategies
-        result = {
-            "RSI": rsi_strategy_with_filters(df),
-            "MovingAverage": moving_average_strategy_with_filters(df),
-            "BollingerBands": bollinger_bands_strategy_with_rsi(df),
-            "MACD": macd_strategy_with_filters(df),
-            "StochasticOscillator": stochastic_oscillator_strategy_with_filters(
-                df, support_level=ltp * 0.95, resistance_level=ltp * 1.05
-            ),
-            "VWAP": vwap_strategy_with_filters(df),
+        strategy_signals = {}
+        
+        # RSI Strategy
+        try:
+            rsi_result = rsi_strategy_with_filters(df)
+            strategy_signals["RSI"] = rsi_result
+        except Exception as e:
+            logger.error(f"Error in RSI strategy for {stock_symbol}: {e}")
+            strategy_signals["RSI"] = {"signal": "ERROR", "strength": 0}
+        
+        # Moving Average Strategy
+        try:
+            ma_result = moving_average_strategy_with_filters(df)
+            strategy_signals["MovingAverage"] = ma_result
+        except Exception as e:
+            logger.error(f"Error in Moving Average strategy for {stock_symbol}: {e}")
+            strategy_signals["MovingAverage"] = {"signal": "ERROR", "strength": 0}
+        
+        # Bollinger Bands Strategy
+        try:
+            bb_result = bollinger_bands_strategy_with_rsi(df)
+            strategy_signals["BollingerBands"] = bb_result
+        except Exception as e:
+            logger.error(f"Error in Bollinger Bands strategy for {stock_symbol}: {e}")
+            strategy_signals["BollingerBands"] = {"signal": "ERROR", "strength": 0}
+        
+        # MACD Strategy
+        try:
+            macd_result = macd_strategy_with_filters(df)
+            strategy_signals["MACD"] = macd_result
+        except Exception as e:
+            logger.error(f"Error in MACD strategy for {stock_symbol}: {e}")
+            strategy_signals["MACD"] = {"signal": "ERROR", "strength": 0}
+        
+        # Stochastic Oscillator Strategy
+        try:
+            # Dynamically calculate support and resistance
+            lowest_low = df['low'].iloc[-20:].min()
+            highest_high = df['high'].iloc[-20:].max()
+            
+            stoch_result = stochastic_oscillator_strategy_with_filters(
+                df, support_level=lowest_low, resistance_level=highest_high
+            )
+            strategy_signals["StochasticOscillator"] = stoch_result
+        except Exception as e:
+            logger.error(f"Error in Stochastic Oscillator strategy for {stock_symbol}: {e}")
+            strategy_signals["StochasticOscillator"] = {"signal": "ERROR", "strength": 0}
+        
+        # VWAP Strategy
+        try:
+            vwap_result = vwap_strategy_with_filters(df)
+            strategy_signals["VWAP"] = vwap_result
+        except Exception as e:
+            logger.error(f"Error in VWAP strategy for {stock_symbol}: {e}")
+            strategy_signals["VWAP"] = {"signal": "ERROR", "strength": 0}
+            
+        # Aggregate signals from all strategies
+        aggregated_signal = aggregate_signals(strategy_signals)
+        
+        # Log the combined signal
+        logger.info(
+            f"Aggregated signal for {stock_symbol}: {aggregated_signal['signal']} with {aggregated_signal['strength']}% strength", 
+            extra={"symbol": stock_symbol, "aggregated_signal": aggregated_signal}
+        )
+        
+        # Place order if signal is actionable
+        if aggregated_signal['signal'] in ['BUY', 'SELL'] and aggregated_signal['strength'] >= 60:
+            trade = place_order(
+                aggregated_signal, 
+                stock_symbol, 
+                "Consensus", 
+                df
+            )
+            if trade:
+                logger.info(f"Trade placed for {stock_symbol}: {trade}")
+        
+        return stock_symbol, {
+            "aggregated_signal": aggregated_signal,
+            "individual_signals": strategy_signals
         }
-
-        # Deduct capital after placing an order
-        remaining_capital -= quantity * ltp
-        logging.info(f"Processed strategies for {stock_symbol}: {result}, Remaining Capital: {remaining_capital}")
-        return stock_symbol, result, remaining_capital
     except Exception as e:
-        logging.error(f"Error processing strategies for {stock_symbol}: {e}")
-        return stock_symbol, "HOLD", remaining_capital
+        logger.error(f"Error processing strategies for {stock_symbol}: {e}")
+        return stock_symbol, {"signal": "ERROR", "strength": 0, "reason": str(e)}
 
-def run_all_strategies_for_stocks(stock_symbols, initial_capital):
+def run_all_strategies_for_stocks(stock_symbols, check_existing_positions=True):
     """
     Run all strategies for multiple stocks using Zerodha API in parallel.
     """
+    # First check existing positions for stop/take profit hits
+    if check_existing_positions:
+        logger.info("Checking existing positions for stop loss/take profit triggers")
+        closed_trades = check_stop_losses_and_take_profits()
+        if closed_trades:
+            logger.info(f"Closed {len(closed_trades)} trades due to SL/TP triggers")
+            
+    # Fetch data for all stocks
     stock_data = fetch_real_time_data(stock_symbols)
     if not stock_data:
-        logging.error("Failed to fetch stock data.")
+        logger.error("Failed to fetch stock data.")
         return {}
 
+    # Process signals for each stock in parallel
     signals = {}
-    remaining_capital = initial_capital
-    with ThreadPoolExecutor(max_workers=min(10, len(stock_symbols))) as executor:  # Dynamically adjust workers
-        futures = {executor.submit(process_stock, stock, stock_data, remaining_capital): stock for stock in stock_symbols}
+    with ThreadPoolExecutor(max_workers=min(10, len(stock_symbols))) as executor:
+        futures = {executor.submit(process_stock, stock, stock_data): stock for stock in stock_symbols}
         for future in as_completed(futures):
             try:
-                stock_symbol, result, updated_capital = future.result()
+                stock_symbol, result = future.result()
                 signals[stock_symbol] = result
-                remaining_capital = updated_capital  # Update remaining capital after each stock processing
             except Exception as e:
-                logging.error(f"Error in thread execution: {e}")
+                logger.error(f"Error in thread execution: {e}")
 
-    logging.info(f"[Multi-Stock Signals]: {signals}")
+    # Log portfolio statistics after processing
+    risk_metrics = get_risk_exposure()
+    logger.info(f"Portfolio risk metrics: {risk_metrics}")
+    
+    # Log performance statistics
+    performance = get_strategy_performance("Consensus")
+    logger.info(f"Overall strategy performance: {performance}")
+    
     return signals
+
+def run_scheduled(stock_symbols, interval_minutes=5):
+    """
+    Run strategies on a schedule and handle automatic trading.
+    
+    Parameters:
+    - stock_symbols: List of stock symbols to monitor
+    - interval_minutes: How often to run the strategies (in minutes)
+    """
+    logger.info(f"Starting scheduled strategy execution every {interval_minutes} minutes")
+    
+    while True:
+        start_time = datetime.now()
+        logger.info(f"Running strategies at {start_time}")
+        
+        try:
+            # Execute strategies
+            results = run_all_strategies_for_stocks(stock_symbols)
+            logger.info(f"Completed strategy execution for {len(results)} symbols")
+            
+            # Calculate time to next run
+            elapsed = (datetime.now() - start_time).total_seconds()
+            sleep_seconds = max(0, interval_minutes * 60 - elapsed)
+            
+            if sleep_seconds > 0:
+                logger.info(f"Sleeping for {sleep_seconds:.1f} seconds until next run")
+                time.sleep(sleep_seconds)
+                
+        except KeyboardInterrupt:
+            logger.info("Strategy execution stopped by user")
+            break
+        except Exception as e:
+            logger.error(f"Error in scheduled execution: {e}")
+            # Sleep for a shorter time on error to retry sooner
+            time.sleep(60)

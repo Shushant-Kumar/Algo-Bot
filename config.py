@@ -23,6 +23,9 @@ PER_STOCK_CAPITAL_LIMIT = 10000
 # Slippage tolerance as a fraction (e.g., 0.01 for 1%)
 SLIPPAGE_TOLERANCE = 0.01
 
+# Trading mode
+SIMULATION_MODE = True  # Set to False for real trading with actual orders
+
 # Validate configuration values
 if TOTAL_CAPITAL <= 0:
     raise ValueError("TOTAL_CAPITAL must be greater than 0.")
@@ -72,6 +75,97 @@ def calculate_real_time_allocation():
             print(e)
     return real_time_allocation
 
-# Example usage:
-# real_time_allocation = calculate_real_time_allocation()
-# print(real_time_allocation)
+# Strategy-specific parameters
+# RSI Strategy parameters
+RSI_PERIOD = 14
+RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 30
+
+# Moving Average Strategy parameters
+MA_SHORT_WINDOW = 5
+MA_LONG_WINDOW = 20
+MA_TREND_WINDOW = 50
+
+# Bollinger Bands Strategy parameters
+BB_PERIOD = 20
+BB_STD_DEV = 2
+BB_RSI_PERIOD = 14
+
+# MACD Strategy parameters
+MACD_FAST_PERIOD = 12
+MACD_SLOW_PERIOD = 26
+MACD_SIGNAL_PERIOD = 9
+
+# Stochastic Oscillator parameters
+STOCH_K_PERIOD = 14
+STOCH_D_PERIOD = 3
+STOCH_OVERBOUGHT = 80
+STOCH_OVERSOLD = 20
+
+# VWAP Strategy parameters
+VWAP_VOLUME_FACTOR = 1.5
+VWAP_DISTANCE_LIMIT = 1.5
+
+# Advanced risk management parameters
+MAX_STRATEGIES_PER_SYMBOL = 2  # Maximum strategies allowed to trade the same symbol
+MAX_RISK_PER_STRATEGY = 10     # Maximum % of capital allocated to a single strategy
+MAX_RISK_PER_SYMBOL = 15       # Maximum % of capital allocated to a single symbol
+MIN_CONFIDENCE_THRESHOLD = 60  # Minimum confidence score (0-100) to place a trade
+MIN_SIGNAL_STRENGTH = 50       # Minimum signal strength for capital allocation
+
+# Portfolio diversification parameters
+MIN_STOCKS = 3                 # Minimum number of stocks in portfolio
+MAX_STOCKS = 10                # Maximum number of stocks in portfolio
+SECTOR_ALLOCATION_LIMITS = {   # Maximum allocation per market sector
+    'TECHNOLOGY': 30,          # e.g., 30% maximum in technology stocks
+    'FINANCE': 25,
+    'HEALTHCARE': 20,
+    'ENERGY': 15,
+    'CONSUMER': 25,
+    'OTHER': 10
+}
+
+# Performance tracking parameters
+PERFORMANCE_HISTORY_DAYS = 90  # Number of days to keep performance history
+WIN_LOSS_RATIO_THRESHOLD = 1.5 # Minimum win/loss ratio to maintain for a strategy
+
+# Logging configuration
+LOG_LEVEL = "INFO"             # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_TO_FILE = True
+LOG_TO_CONSOLE = True
+LOG_JSON_FORMAT = False
+
+# Backtesting parameters
+BACKTEST_START_DATE = "2022-01-01"
+BACKTEST_END_DATE = "2023-01-01"
+COMMISSION_RATE = 0.0005       # 0.05% commission per trade
+
+# Order execution parameters
+USE_MARKET_ORDERS = True       # If False, use limit orders
+LIMIT_ORDER_TIMEOUT = 300      # Seconds to wait for limit order execution
+MAX_RETRIES_ON_ERROR = 3       # Number of times to retry on API error
+RETRY_DELAY_SECONDS = 5        # Seconds to wait between retries
+
+# Watchlist - stocks to monitor
+WATCHLIST = [
+    'RELIANCE',
+    'INFY',
+    'TCS',
+    'HDFCBANK',
+    'ICICIBANK',
+    'SBIN',
+    'TATAMOTORS',
+    'WIPRO',
+    'BHARTIARTL',
+    'KOTAKBANK'
+]
+
+# Validate advanced parameters
+if MAX_RISK_PER_STRATEGY <= 0 or MAX_RISK_PER_STRATEGY > 100:
+    raise ValueError("MAX_RISK_PER_STRATEGY must be between 0 and 100.")
+if MAX_RISK_PER_SYMBOL <= 0 or MAX_RISK_PER_SYMBOL > 100:
+    raise ValueError("MAX_RISK_PER_SYMBOL must be between 0 and 100.")
+if MIN_CONFIDENCE_THRESHOLD < 0 or MIN_CONFIDENCE_THRESHOLD > 100:
+    raise ValueError("MIN_CONFIDENCE_THRESHOLD must be between 0 and 100.")
+if MIN_SIGNAL_STRENGTH < 0 or MIN_SIGNAL_STRENGTH > 100:
+    raise ValueError("MIN_SIGNAL_STRENGTH must be between 0 and 100.")

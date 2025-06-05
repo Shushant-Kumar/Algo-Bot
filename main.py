@@ -5,10 +5,10 @@ from utils.risk_manager import place_order, remaining_capital
 import schedule
 import time
 import datetime
-from kiteconnect import KiteConnect
+from manager import kite_manager  # Import the singleton instance
 from utils.strategy_manager import run_all_strategies_for_stocks
 from config import PER_STOCK_ALLOCATION
-from ta.volatility import AverageTrueRange  # Add this import for ATR calculation
+from ta.volatility import AverageTrueRange  
 import logging
 from config import calculate_real_time_allocation, TOTAL_CAPITAL, SLIPPAGE_TOLERANCE
 from order_execution import OrderExecution
@@ -24,15 +24,15 @@ DAILY_PNL = 0  # Tracks the daily profit and loss
 DAILY_LOSS_LIMIT_PERCENTAGE = 5  # Stop trading if daily loss exceeds 5% of total capital
 
 # Initialize Kite Connect with environment variables
-kite = KiteConnect(api_key=os.getenv("ZERODHA_API_KEY"))
-kite.set_access_token(os.getenv("ZERODHA_ACCESS_TOKEN"))
+# kite = KiteConnect(api_key=os.getenv("ZERODHA_API_KEY"))
+# kite.set_access_token(os.getenv("ZERODHA_ACCESS_TOKEN"))
 
 def get_account_balance():
     """
     Fetch account balance from Zerodha API.
     """
     try:
-        funds = kite.margins("equity")
+        funds = kite_manager.get_margins("equity")
         balance = funds["available"]["cash"]
         if balance is None:
             raise ValueError("Account balance could not be fetched.")
@@ -87,9 +87,9 @@ def place_order(stock_symbol, transaction_type, quantity, df):
         elif transaction_type == "BUY":
             DAILY_PNL -= (current_price - executed_price) * quantity
 
-        # Place limit order
-        order_id = kite.place_order(
-            tradingsymbol=stock_symbol,
+        # Place limit order using kite_manager
+        order_id = kite_manager.place_order(
+            symbol=stock_symbol,
             exchange="NSE",
             transaction_type=transaction_type,
             quantity=quantity,
@@ -112,8 +112,8 @@ def get_data(stock_symbol):
     Fetch real-time market data for the given stock symbol using Zerodha's kite.quote().
     """
     try:
-        # Fetch live market data
-        quote = kite.quote(f"NSE:{stock_symbol}")
+        # Fetch live market data using kite_manager
+        quote = kite_manager.get_quote(stock_symbol)
         data = {
             'high': [quote[f'NSE:{stock_symbol}']['ohlc']['high']],
             'low': [quote[f'NSE:{stock_symbol}']['ohlc']['low']],
@@ -166,48 +166,190 @@ def run_bot():
     logging.info(f"\n✅ Cycle Complete. Remaining Capital: ₹{remaining_capital:.2f}")
     logging.info(f"📊 Daily PnL: ₹{DAILY_PNL:.2f}")
 
-# Run every 5 mins
-schedule.every(5).minutes.do(run_bot)
-
-print("🚀 Algo Bot Started... Waiting for next run...")
-
-# Daily PnL Reset (Optional - we'll improve this later)
-last_reset_day = None
-
-while True:
-    today = datetime.date.today()
-    if last_reset_day != today:
-        print("\n🔁 New Day! Resetting Capital and PnL\n")
-        from config import TOTAL_CAPITAL
-        from utils import risk_manager
-        risk_manager.remaining_capital = TOTAL_CAPITAL
-        last_reset_day = today
-        DAILY_PNL = 0  # Reset daily PnL
-
-    schedule.run_pending()
-    time.sleep(1)
-
 def main():
     """
-    Main function to execute the algo-bot.
+    Main function to execute the algo-bot with enhanced components and Zerodha integration.
     """
-    logging.info("Starting algo-bot...")
+    # Initialize our enhanced logger
+    from utils.logger import Logger
+    logger = Logger()
+    logger.info("Starting algo-bot with enhanced strategies...")
+    
     try:
-        # Initialize order execution with slippage tolerance
-        order_executor = OrderExecution(slippage_tolerance=SLIPPAGE_TOLERANCE)
-
-        # Example usage
-        ltp = 100  # Last traded price
-        market_depth = [(100, 50), (101, 30), (102, 20)]  # Price levels with quantities
-        order_executor.execute_order('buy', 60, ltp, market_depth)
-
-        real_time_allocation = calculate_real_time_allocation()
-        logging.info(f"Real-time allocation: {real_time_allocation}")
-        print(f"Total Capital: {TOTAL_CAPITAL}")
-        print(f"Real-time Allocation: {real_time_allocation}")
+        # Import enhanced components
+        from utils.risk_manager import get_risk_exposure, check_stop_losses_and_take_profits
+        from utils.strategy_manager import run_all_strategies_for_stocks
+        from order_execution import OrderExecution, OrderType
+        from config import (
+            TOTAL_CAPITAL,
+            SLIPPAGE_TOLERANCE,
+            WATCHLIST,
+            LOG_LEVEL,
+            MAX_RETRIES_ON_ERROR,
+            RETRY_DELAY_SECONDS,
+            USE_MARKET_ORDERS
+        )
+        
+        # Initialize Kite Connect with better error handling
+        # kite = KiteConnect(api_key=os.getenv("ZERODHA_API_KEY"))
+        
+        # Check if access token is available
+        access_token = os.getenv("ZERODHA_ACCESS_TOKEN")
+        if not access_token:
+            # Generate login URL if no access token
+            login_url = kite_manager.get_login_url()
+            logger.warning(f"No access token found. Please login using: {login_url}")
+            request_token = input("Enter request token after login: ")
+            
+            # Generate access token
+            try:
+                session = kite_manager.generate_session(request_token)
+                access_token = session["access_token"]
+                logger.info(f"Access token generated successfully. Please set as environment variable.")
+                print(f"Access Token: {access_token}")
+            except Exception as e:
+                logger.error(f"Failed to generate access token: {e}")
+                return
+        else:
+            # Set access token
+            try:
+                kite_manager.set_access_token(access_token)
+                logger.info("Successfully authenticated with Zerodha")
+            except Exception as e:
+                logger.error(f"Failed to set access token: {e}")
+                return
+        
+        # Test authentication
+        if not kite_manager.set_access_token(access_token):
+            logger.critical("Could not authenticate with Zerodha. Please check your API key and access token.")
+            return
+        
+        # Import SIMULATION_MODE from config or use default value
+        try:
+            from config import SIMULATION_MODE
+        except ImportError:
+            logger.warning("SIMULATION_MODE not found in config, defaulting to True (paper trading)")
+            SIMULATION_MODE = True
+        
+        # Initialize order execution with parameters from config
+        order_executor = OrderExecution(
+            slippage_tolerance=SLIPPAGE_TOLERANCE,
+            max_retries=MAX_RETRIES_ON_ERROR,
+            retry_delay=RETRY_DELAY_SECONDS,
+            use_market_orders=USE_MARKET_ORDERS,
+            simulation_mode=SIMULATION_MODE
+        )
+        
+        # Log simulation mode status
+        if SIMULATION_MODE:
+            logger.info("Running in SIMULATION MODE (paper trading)")
+        else:
+            logger.info("Running in LIVE TRADING MODE - Real orders will be placed!")
+            
+        # Schedule trading functions
+        def trading_cycle():
+            """Run a full trading cycle with enhanced strategies"""
+            logger.info("Starting trading cycle")
+            
+            try:
+                # First check existing positions for stop losses/take profits
+                closed_positions = check_stop_losses_and_take_profits()
+                if closed_positions:
+                    logger.info(f"Closed {len(closed_positions)} positions based on SL/TP")
+                
+                # Get current risk exposure
+                risk_metrics = get_risk_exposure()
+                logger.info(f"Current risk metrics: {risk_metrics}")
+                
+                # Run all strategies for watchlist stocks
+                results = run_all_strategies_for_stocks(WATCHLIST)
+                
+                # Log summary of results
+                buy_signals = sum(1 for r in results.values() 
+                                if r.get('aggregated_signal', {}).get('signal') == 'BUY')
+                sell_signals = sum(1 for r in results.values() 
+                                 if r.get('aggregated_signal', {}).get('signal') == 'SELL')
+                
+                logger.info(f"Trading cycle complete. Signals: {buy_signals} buys, {sell_signals} sells")
+                
+                # Log updated risk exposure
+                updated_metrics = get_risk_exposure()
+                logger.info(f"Updated risk metrics: {updated_metrics}")
+                
+            except Exception as e:
+                logger.error(f"Error in trading cycle: {e}")
+        
+        # Schedule trading cycle at market open or immediately if during market hours
+        current_time = datetime.datetime.now().time()
+        market_open = datetime.time(9, 15)  # 9:15 AM
+        market_close = datetime.time(15, 30)  # 3:30 PM
+        
+        if market_open <= current_time <= market_close:
+            logger.info("Market is open. Running initial trading cycle...")
+            trading_cycle()
+        else:
+            logger.info("Market is closed. Scheduling for next market open.")
+        
+        # Schedule regular cycles during market hours
+        schedule.every(5).minutes.do(trading_cycle).tag('trading')
+        
+        # Schedule daily reset for new trading day
+        def daily_reset():
+            """Reset daily metrics and prepare for new trading day"""
+            logger.info("Performing daily reset for new trading day")
+            global DAILY_PNL
+            DAILY_PNL = 0
+            
+            # Reset any daily metrics in other modules
+            # Other reset operations as needed
+            
+        schedule.every().day.at("09:00").do(daily_reset)
+        
+        # Setup market close routine
+        def market_close_routine():
+            """Execute end-of-day routine at market close"""
+            logger.info("Market closing. Running end-of-day routine.")
+            
+            # Cancel any pending orders
+            active_orders = order_executor.get_active_orders()
+            for order_id in active_orders:
+                if active_orders[order_id]['status'] == 'pending':
+                    order_executor.cancel_order(order_id)
+            
+            # Log final performance for the day
+            from utils.risk_manager import get_strategy_performance
+            performance = get_strategy_performance()
+            logger.info(f"End of day performance: {performance}")
+            
+            # Clear trading schedule for after-hours
+            schedule.clear('trading')
+            
+        schedule.every().day.at("15:30").do(market_close_routine)
+        
+        # Main loop
+        logger.info("Entering main loop. Press Ctrl+C to exit.")
+        print("🚀 Algo Bot Started... Waiting for next run...")
+        
+        last_reset_day = datetime.date.today()
+        
+        while True:
+            # Check if it's a new day
+            today = datetime.date.today()
+            if last_reset_day != today:
+                logger.info("New day detected. Resetting metrics.")
+                daily_reset()
+                last_reset_day = today
+            
+            # Run scheduled tasks
+            schedule.run_pending()
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user.")
+        print("Bot stopped by user.")
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
-        print(f"An error occurred: {e}")
+        logger.critical(f"Critical error in main loop: {e}")
+        print(f"Critical error: {e}")
 
 if __name__ == "__main__":
     main()
