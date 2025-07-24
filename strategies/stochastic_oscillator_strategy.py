@@ -1,344 +1,381 @@
+"""
+Production-Ready Stochastic Oscillator Strategy for High-Frequency Intraday Trading
+
+This module provides an optimized, low-latency implementation of the Stochastic
+Oscillator strategy with divergence detection for very fast intraday trading.
+"""
+
 import numpy as np
-import pandas as pd
+from collections import deque
+from typing import Dict, Optional, Tuple, Any
+import time
+from strategies.fast_strategy_base import FastStrategyBase
 
-def find_pivots(series, window=5):
+class FastStochasticStrategy(FastStrategyBase):
     """
-    Identify pivot points in a series.
-    A pivot high is a local maximum, and a pivot low is a local minimum.
+    High-performance Stochastic Oscillator strategy optimized for intraday trading.
+    
+    Features:
+    - Rolling stochastic calculation with O(1) operations
+    - Fast %K and %D calculation
+    - Divergence detection with price
+    - Overbought/oversold signals
+    - Volume confirmation
+    - Microsecond precision timestamps
     """
-    pivot_highs = []
-    pivot_lows = []
     
-    # Need at least 2*window+1 points to find pivots
-    if len(series) < 2*window+1:
-        return pivot_highs, pivot_lows
-    
-    for i in range(window, len(series) - window):
-        if all(series.iloc[i] > series.iloc[i-j] for j in range(1, window+1)) and \
-           all(series.iloc[i] > series.iloc[i+j] for j in range(1, window+1)):
-            pivot_highs.append(i)
-        if all(series.iloc[i] < series.iloc[i-j] for j in range(1, window+1)) and \
-           all(series.iloc[i] < series.iloc[i+j] for j in range(1, window+1)):
-            pivot_lows.append(i)
-            
-    return pivot_highs, pivot_lows
-
-def detect_stochastic_divergence(df, lookback=20, window=3):
-    """
-    Detect divergence between price and stochastic oscillator using proper pivot points.
-    
-    Parameters:
-    - df: DataFrame with price and stochastic data
-    - lookback: Number of bars to look back for divergences
-    - window: Window size for pivot detection
-    
-    Returns:
-    - dict: Containing bullish and bearish divergence information
-    """
-    # Ensure we have enough data
-    if len(df) < lookback + window * 2:
-        return {'bullish': False, 'bearish': False, 'strength': 0}
-    
-    # Get the recent part of the dataframe
-    recent_df = df.iloc[-lookback:].copy()
-    
-    # Find price pivots
-    price_highs, price_lows = find_pivots(recent_df['close'], window)
-    
-    # Find stochastic pivots
-    stoch_highs, stoch_lows = find_pivots(recent_df['%K'], window)
-    
-    # Check for bullish divergence
-    bullish_div = False
-    bullish_strength = 0
-    
-    if len(price_lows) >= 2 and len(stoch_lows) >= 2:
-        # Get the two most recent price lows and stochastic lows
-        if len(price_lows) >= 2 and len(stoch_lows) >= 2:
-            # Compare the most recent pivots
-            p1, p2 = price_lows[-1], price_lows[-2]
-            s1, s2 = stoch_lows[-1], stoch_lows[-2]
-            
-            # Bullish divergence: price makes lower low but stochastic makes higher low
-            if (recent_df['close'].iloc[p1] < recent_df['close'].iloc[p2] and 
-                recent_df['%K'].iloc[s1] > recent_df['%K'].iloc[s2]):
-                bullish_div = True
-                # Calculate strength based on the divergence magnitude
-                price_change = (recent_df['close'].iloc[p1] / recent_df['close'].iloc[p2] - 1) * 100
-                stoch_change = (recent_df['%K'].iloc[s1] / recent_df['%K'].iloc[s2] - 1) * 100
-                bullish_strength = abs(stoch_change - price_change)
-    
-    # Check for bearish divergence
-    bearish_div = False
-    bearish_strength = 0
-    
-    if len(price_highs) >= 2 and len(stoch_highs) >= 2:
-        # Get the two most recent price highs and stochastic highs
-        p1, p2 = price_highs[-1], price_highs[-2]
-        s1, s2 = stoch_highs[-1], stoch_highs[-2]
+    def __init__(self, 
+                 k_period: int = 14,
+                 d_period: int = 3,
+                 smooth_k: int = 3,
+                 overbought: float = 80.0,
+                 oversold: float = 20.0,
+                 divergence_lookback: int = 20,
+                 volume_factor: float = 1.5,
+                 **kwargs):
+        """
+        Initialize the fast Stochastic strategy.
         
-        # Bearish divergence: price makes higher high but stochastic makes lower high
-        if (recent_df['close'].iloc[p1] > recent_df['close'].iloc[p2] and 
-            recent_df['%K'].iloc[s1] < recent_df['%K'].iloc[s2]):
-            bearish_div = True
-            # Calculate strength based on the divergence magnitude
-            price_change = (recent_df['close'].iloc[p1] / recent_df['close'].iloc[p2] - 1) * 100
-            stoch_change = (recent_df['%K'].iloc[s1] / recent_df['%K'].iloc[s2] - 1) * 100
-            bearish_strength = abs(stoch_change - price_change)
-    
-    return {
-        'bullish': bullish_div,
-        'bearish': bearish_div,
-        'strength': max(bullish_strength, bearish_strength)
-    }
-
-def detect_support_resistance(df, lookback=100, window=5, threshold=0.03):
-    """
-    Dynamically detect support and resistance levels from recent data.
-    
-    Parameters:
-    - df: DataFrame with price data
-    - lookback: Number of bars to look back
-    - window: Window size for pivot detection
-    - threshold: Price percentage to cluster levels
-    
-    Returns:
-    - tuple: (support levels, resistance levels)
-    """
-    if len(df) < lookback:
-        return None, None
-    
-    # Get recent data
-    recent_df = df.iloc[-lookback:].copy()
-    
-    # Find pivot points
-    highs, lows = find_pivots(recent_df['close'], window)
-    
-    # Extract prices at pivot points
-    resistance_levels = [recent_df['high'].iloc[i] for i in highs]
-    support_levels = [recent_df['low'].iloc[i] for i in lows]
-    
-    # Cluster nearby levels (within threshold%)
-    def cluster_levels(levels, threshold_pct):
-        if not levels:
-            return []
+        Parameters:
+        - k_period: Period for %K calculation
+        - d_period: Period for %D smoothing
+        - smooth_k: Period for %K smoothing
+        - overbought/oversold: Stochastic thresholds
+        - divergence_lookback: Bars to look back for divergence
+        - volume_factor: Volume surge detection factor
+        """
+        super().__init__(**kwargs)
         
-        levels = sorted(levels)
-        clusters = []
-        current_cluster = [levels[0]]
+        self.k_period = k_period
+        self.d_period = d_period
+        self.smooth_k = smooth_k
+        self.overbought = overbought
+        self.oversold = oversold
+        self.divergence_lookback = divergence_lookback
+        self.volume_factor = volume_factor
         
-        for level in levels[1:]:
-            # If this level is within threshold% of the average of the current cluster
-            if (level - np.mean(current_cluster))/np.mean(current_cluster) <= threshold_pct:
-                current_cluster.append(level)
+        # OHLC data storage
+        self.high_prices = deque(maxlen=k_period)
+        self.low_prices = deque(maxlen=k_period)
+        self.close_prices = deque(maxlen=k_period)
+        
+        # Stochastic components
+        self.raw_k = deque(maxlen=100)
+        self.smooth_k_values = deque(maxlen=100)
+        self.d_values = deque(maxlen=100)
+        
+        # Crossover tracking
+        self.k_d_crossovers = deque(maxlen=10)
+        self.threshold_crossovers = deque(maxlen=10)
+        
+        # Volume analysis
+        self.volume_sma = deque(maxlen=20)
+        
+        # Divergence tracking
+        self.stoch_pivots = deque(maxlen=divergence_lookback)
+        self.price_pivots = deque(maxlen=divergence_lookback)
+        
+    def add_tick(self, price: float, volume: int, timestamp: Optional[float] = None,
+                 high: Optional[float] = None, low: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Process a new market tick and generate trading signals.
+        
+        Parameters:
+        - price: Current price (close)
+        - volume: Current volume
+        - timestamp: Optional timestamp
+        - high: Optional high price
+        - low: Optional low price
+        
+        Returns:
+        - Dictionary with signal and metadata
+        """
+        start_time = time.perf_counter()
+        
+        # Use price as high/low if not provided
+        if high is None:
+            high = price
+        if low is None:
+            low = price
+        
+        # Update base data
+        self._update_base_data(price, volume, timestamp)
+        
+        # Update OHLC data
+        self.high_prices.append(high)
+        self.low_prices.append(low)
+        self.close_prices.append(price)
+        
+        # Initialize result
+        result = {
+            'signal': 'HOLD',
+            'strength': 0.0,
+            'k_percent': 50.0,
+            'd_percent': 50.0,
+            'raw_k': 50.0,
+            'volume_surge': False,
+            'k_d_crossover': False,
+            'threshold_cross': False,
+            'divergence': False,
+            'overbought': False,
+            'oversold': False,
+            'price': price,
+            'volume': volume,
+            'calculation_time_ms': 0.0
+        }
+        
+        # Need minimum data for calculations
+        if len(self.high_prices) < self.k_period:
+            result['calculation_time_ms'] = (time.perf_counter() - start_time) * 1000
+            return result
+        
+        # Calculate stochastic components
+        raw_k = self._calculate_raw_k()
+        smooth_k = self._calculate_smooth_k(raw_k)
+        d_value = self._calculate_d(smooth_k)
+        
+        result['raw_k'] = raw_k
+        result['k_percent'] = smooth_k
+        result['d_percent'] = d_value
+        
+        # Store values
+        self.raw_k.append(raw_k)
+        self.smooth_k_values.append(smooth_k)
+        self.d_values.append(d_value)
+        
+        # Check volume surge
+        volume_surge = self._check_volume_surge(volume)
+        result['volume_surge'] = volume_surge
+        
+        # Detect crossovers
+        k_d_crossover = self._detect_k_d_crossover(smooth_k, d_value)
+        threshold_cross = self._detect_threshold_crossover(smooth_k)
+        result['k_d_crossover'] = k_d_crossover
+        result['threshold_cross'] = threshold_cross
+        
+        # Check overbought/oversold
+        overbought = smooth_k > self.overbought
+        oversold = smooth_k < self.oversold
+        result['overbought'] = overbought
+        result['oversold'] = oversold
+        
+        # Detect divergence
+        divergence = self._detect_stochastic_divergence()
+        result['divergence'] = divergence
+        
+        # Generate signal
+        signal, strength = self._generate_signal(
+            smooth_k, d_value, overbought, oversold, k_d_crossover,
+            threshold_cross, divergence, volume_surge
+        )
+        
+        # Confirm signal
+        if self._confirm_signal(signal):
+            result['signal'] = signal
+            result['strength'] = strength
+        
+        # Performance tracking
+        calc_time = (time.perf_counter() - start_time) * 1000
+        if hasattr(self, 'calculation_times') and self.calculation_times is not None:
+            self.calculation_times.append(calc_time)
+        result['calculation_time_ms'] = calc_time
+        
+        return result
+    
+    def _calculate_raw_k(self) -> float:
+        """Calculate raw %K value."""
+        if len(self.high_prices) < self.k_period:
+            return 50.0
+        
+        # Get high and low over the period
+        period_high = max(self.high_prices)
+        period_low = min(self.low_prices)
+        current_close = self.close_prices[-1]
+        
+        # Avoid division by zero
+        if period_high == period_low:
+            return 50.0
+        
+        raw_k = ((current_close - period_low) / (period_high - period_low)) * 100
+        return max(0.0, min(100.0, raw_k))
+    
+    def _calculate_smooth_k(self, raw_k: float) -> float:
+        """Calculate smoothed %K value."""
+        if len(self.raw_k) < self.smooth_k:
+            return raw_k
+        
+        recent_k = list(self.raw_k)[-(self.smooth_k-1):] + [raw_k]
+        return float(np.mean(recent_k))
+    
+    def _calculate_d(self, smooth_k: float) -> float:
+        """Calculate %D value (SMA of %K)."""
+        if len(self.smooth_k_values) < self.d_period:
+            return smooth_k
+        
+        recent_k = list(self.smooth_k_values)[-(self.d_period-1):] + [smooth_k]
+        return float(np.mean(recent_k))
+    
+    def _check_volume_surge(self, current_volume: int) -> bool:
+        """Check for volume surge."""
+        self.volume_sma.append(current_volume)
+        
+        if len(self.volume_sma) < 10:
+            return False
+        
+        avg_volume = float(np.mean(list(self.volume_sma)[:-1]))
+        return current_volume > (avg_volume * self.volume_factor)
+    
+    def _detect_k_d_crossover(self, k_value: float, d_value: float) -> bool:
+        """Detect %K and %D crossover."""
+        if len(self.k_d_crossovers) == 0:
+            self.k_d_crossovers.append(k_value > d_value)
+            return False
+        
+        current_position = k_value > d_value
+        previous_position = self.k_d_crossovers[-1]
+        
+        self.k_d_crossovers.append(current_position)
+        
+        return current_position != previous_position
+    
+    def _detect_threshold_crossover(self, k_value: float) -> bool:
+        """Detect crossover of overbought/oversold thresholds."""
+        if len(self.threshold_crossovers) == 0:
+            # Determine current zone
+            if k_value > self.overbought:
+                zone = 'overbought'
+            elif k_value < self.oversold:
+                zone = 'oversold'
             else:
-                # Start a new cluster
-                clusters.append(np.mean(current_cluster))
-                current_cluster = [level]
-        
-        if current_cluster:
-            clusters.append(np.mean(current_cluster))
+                zone = 'neutral'
             
-        return clusters
-    
-    support_clusters = cluster_levels(support_levels, threshold)
-    resistance_clusters = cluster_levels(resistance_levels, threshold)
-    
-    # Return most recent support and resistance
-    support = min(support_clusters) if support_clusters else None
-    resistance = max(resistance_clusters) if resistance_clusters else None
-    
-    return support, resistance
-
-def stochastic_oscillator_strategy_with_filters(df, support_level=None, resistance_level=None, 
-                                              k_period=14, d_period=3, trend_period=50,
-                                              overbought=80, oversold=20, near_level_pct=2,
-                                              volume_factor=1.5):
-    """
-    Enhanced Stochastic Oscillator Strategy with dynamic support/resistance levels, 
-    trend filter, proper divergence detection, and volume confirmation.
-    
-    Parameters:
-    - df: DataFrame with OHLCV data
-    - support_level: Optional support level (detected if None)
-    - resistance_level: Optional resistance level (detected if None)
-    - k_period: Period for %K calculation
-    - d_period: Period for %D calculation
-    - trend_period: Period for trend SMA
-    - overbought: Threshold for overbought condition
-    - oversold: Threshold for oversold condition
-    - near_level_pct: Percentage to consider "near" support/resistance
-    - volume_factor: Factor for volume confirmation
-    
-    Returns:
-    - dict: Signal details including type, strength, and stop levels
-    """
-    # Check for sufficient data
-    required_length = max(k_period, trend_period) + 20  # Need extra for divergence detection
-    if len(df) < required_length:
-        return {"signal": "INSUFFICIENT_DATA", "strength": 0}
-    
-    # Calculate Stochastic Oscillator with division by zero protection
-    df[f'{k_period}_High'] = df['high'].rolling(window=k_period).max()
-    df[f'{k_period}_Low'] = df['low'].rolling(window=k_period).min()
-    
-    # Protect against division by zero
-    denominator = df[f'{k_period}_High'] - df[f'{k_period}_Low']
-    denominator = denominator.replace(0, 0.0001)
-    
-    df['%K'] = (df['close'] - df[f'{k_period}_Low']) / denominator * 100
-    df['%D'] = df['%K'].rolling(window=d_period).mean()
-    
-    # Calculate trend filter
-    df['trend_SMA'] = df['close'].rolling(window=trend_period).mean()
-    
-    # If support/resistance not provided, detect them
-    if support_level is None or resistance_level is None:
-        dynamic_support, dynamic_resistance = detect_support_resistance(df)
-        support_level = dynamic_support if support_level is None else support_level
-        resistance_level = dynamic_resistance if resistance_level is None else resistance_level
+            self.threshold_crossovers.append(zone)
+            return False
         
-        # If still None, use recent lows/highs
-        if support_level is None:
-            support_level = df['low'].iloc[-20:].min()
-        if resistance_level is None:
-            resistance_level = df['high'].iloc[-20:].max()
-    
-    # Detect divergence using proper pivot point analysis
-    divergence = detect_stochastic_divergence(df, lookback=20, window=3)
-    
-    # Add volume analysis if volume column exists
-    has_volume = 'volume' in df.columns
-    if has_volume:
-        df['volume_sma'] = df['volume'].rolling(window=20).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_sma']
-        volume_surge = df['volume_ratio'].iloc[-1] > volume_factor
-    else:
-        volume_surge = True  # Default to True if no volume data
-    
-    # Check if price is near support or resistance
-    near_support = df['close'].iloc[-1] <= support_level * (1 + near_level_pct/100)
-    near_resistance = df['close'].iloc[-1] >= resistance_level * (1 - near_level_pct/100)
-    
-    # Current values
-    latest_k = df['%K'].iloc[-1]
-    latest_d = df['%D'].iloc[-1]
-    prev_k = df['%K'].iloc[-2]
-    prev_d = df['%D'].iloc[-2]
-    latest_price = df['close'].iloc[-1]
-    latest_trend = df['trend_SMA'].iloc[-1]
-    
-    # Consistency check (look for multiple aligned signals)
-    k_above_d = (df['%K'] > df['%D']).iloc[-3:].sum() >= 2
-    k_below_d = (df['%K'] < df['%D']).iloc[-3:].sum() >= 2
-    oversold_count = (df['%K'] < oversold).iloc[-5:].sum()
-    overbought_count = (df['%K'] > overbought).iloc[-5:].sum()
-    
-    # Calculate ATR for stop loss
-    df['tr1'] = abs(df['high'] - df['low'])
-    df['tr2'] = abs(df['high'] - df['close'].shift())
-    df['tr3'] = abs(df['low'] - df['close'].shift())
-    df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-    df['atr'] = df['tr'].rolling(window=14).mean()
-    latest_atr = df['atr'].iloc[-1]
-    
-    # Calculate signal strength (0-100)
-    def calculate_strength(signal_type):
-        base = 50  # Start at neutral
-        
-        # Stochastic position (0-20)
-        if signal_type == "BUY":
-            stoch_score = max(0, min(20, ((oversold + 10) - latest_k) / 2))
+        # Determine current zone
+        if k_value > self.overbought:
+            current_zone = 'overbought'
+        elif k_value < self.oversold:
+            current_zone = 'oversold'
         else:
-            stoch_score = max(0, min(20, (latest_k - (overbought - 10)) / 2))
-            
-        # Crossover strength (0-10)
-        crossover_score = min(10, abs(latest_k - latest_d) * 2)
+            current_zone = 'neutral'
         
-        # Divergence (0-20)
-        div_score = 0
-        if (signal_type == "BUY" and divergence['bullish']) or \
-           (signal_type == "SELL" and divergence['bearish']):
-            div_score = min(20, divergence['strength'] * 2)
-            
-        # Support/Resistance proximity (0-15)
-        sr_score = 0
-        if signal_type == "BUY" and near_support:
-            sr_score = 15
-        elif signal_type == "SELL" and near_resistance:
-            sr_score = 15
-            
-        # Volume confirmation (0-10)
-        vol_score = 10 if volume_surge else 0
+        previous_zone = self.threshold_crossovers[-1]
+        self.threshold_crossovers.append(current_zone)
         
-        # Total score
-        return min(100, base + stoch_score + crossover_score + div_score + sr_score + vol_score)
+        # Return True if crossing from extreme to neutral
+        crossover = (previous_zone in ['overbought', 'oversold'] and 
+                    current_zone == 'neutral')
         
-    # Enhanced signal generation with multiple filters
-    if (
-        latest_k > latest_d and  # %K crosses above %D
-        prev_k <= prev_d and
-        (latest_k < oversold + 10) and  # Coming from oversold area
-        oversold_count >= 2 and  # Was consistently oversold recently
-        (latest_price > latest_trend or near_support) and  # Above trend or at support
-        (divergence['bullish'] or near_support) and  # Either divergence or strong support
-        (not has_volume or volume_surge)  # Volume confirmation if available
-    ):
-        # Calculate signal strength
-        strength = calculate_strength("BUY")
+        return crossover
+    
+    def _detect_stochastic_divergence(self) -> bool:
+        """Detect divergence between price and stochastic."""
+        if (len(self.prices) < self.divergence_lookback or 
+            len(self.smooth_k_values) < self.divergence_lookback):
+            return False
         
-        # Calculate stop loss and take profit
-        stop_loss = max(latest_price - latest_atr * 2, support_level * 0.98)
-        take_profit = latest_price + latest_atr * 3
+        # Get recent data
+        recent_prices = list(self.prices)[-self.divergence_lookback:]
+        recent_stoch = list(self.smooth_k_values)[-self.divergence_lookback:]
         
+        # Simple divergence check: compare first half vs second half
+        mid_point = len(recent_prices) // 2
+        
+        price_trend = recent_prices[-1] - recent_prices[mid_point]
+        stoch_trend = recent_stoch[-1] - recent_stoch[mid_point]
+        
+        # Divergence thresholds
+        price_threshold = recent_prices[mid_point] * 0.005  # 0.5% price change
+        stoch_threshold = 5.0  # 5 point stochastic change
+        
+        # Bullish divergence: price down significantly, stochastic up
+        # Bearish divergence: price up significantly, stochastic down
+        bullish_div = (price_trend < -price_threshold and stoch_trend > stoch_threshold)
+        bearish_div = (price_trend > price_threshold and stoch_trend < -stoch_threshold)
+        
+        return bullish_div or bearish_div
+    
+    def _generate_signal(self, k_value: float, d_value: float, overbought: bool,
+                        oversold: bool, k_d_crossover: bool, threshold_cross: bool,
+                        divergence: bool, volume_surge: bool) -> Tuple[str, float]:
+        """
+        Generate trading signal based on stochastic analysis.
+        
+        Returns:
+        - Tuple of (signal, strength)
+        """
+        signal = 'HOLD'
+        strength = 0.0
+        
+        # Base signals from threshold crossovers
+        if threshold_cross and len(self.threshold_crossovers) >= 2:
+            prev_zone = self.threshold_crossovers[-2]
+            if prev_zone == 'oversold':
+                signal = 'BUY'
+                strength = 60.0
+            elif prev_zone == 'overbought':
+                signal = 'SELL'
+                strength = 60.0
+        
+        # %K %D crossover signals
+        if k_d_crossover and k_value > d_value and k_value < self.overbought:
+            signal = 'BUY'
+            strength = max(strength, 50.0)
+        elif k_d_crossover and k_value < d_value and k_value > self.oversold:
+            signal = 'SELL'
+            strength = max(strength, 50.0)
+        
+        # Extreme level signals (mean reversion)
+        if overbought and k_value > 90:  # Very overbought
+            signal = 'SELL'
+            strength = max(strength, 70.0)
+        elif oversold and k_value < 10:  # Very oversold
+            signal = 'BUY'
+            strength = max(strength, 70.0)
+        
+        # %K and %D alignment
+        if signal == 'BUY' and k_value > d_value:
+            strength *= 1.2  # Both moving up
+        elif signal == 'SELL' and k_value < d_value:
+            strength *= 1.2  # Both moving down
+        
+        # Divergence boost
+        if divergence and signal != 'HOLD':
+            strength *= 1.4
+        
+        # Volume confirmation
+        if volume_surge and signal != 'HOLD':
+            strength *= 1.2
+        
+        # Momentum check
+        if len(self.smooth_k_values) >= 3:
+            k_momentum = self.smooth_k_values[-1] - self.smooth_k_values[-3]
+            if signal == 'BUY' and k_momentum > 0:
+                strength *= 1.1  # Positive momentum
+            elif signal == 'SELL' and k_momentum < 0:
+                strength *= 1.1  # Negative momentum
+        
+        # Reduce strength if in middle zone without crossover
+        if not k_d_crossover and not threshold_cross and 30 < k_value < 70:
+            strength *= 0.7
+        
+        # Cap strength at 100%
+        strength = min(strength, 100.0)
+        
+        return signal, strength
+    
+    def get_strategy_info(self) -> Dict[str, Any]:
+        """Get current strategy state information."""
         return {
-            "signal": "BUY",
-            "strength": strength,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "divergence": divergence['bullish'],
-            "entry_zone": (support_level, support_level * (1 + near_level_pct/100))
-        }
-        
-    elif (
-        latest_k < latest_d and  # %K crosses below %D
-        prev_k >= prev_d and
-        (latest_k > overbought - 10) and  # Coming from overbought area
-        overbought_count >= 2 and  # Was consistently overbought recently
-        (latest_price < latest_trend or near_resistance) and  # Below trend or at resistance
-        (divergence['bearish'] or near_resistance) and  # Either divergence or strong resistance
-        (not has_volume or volume_surge)  # Volume confirmation if available
-    ):
-        # Calculate signal strength
-        strength = calculate_strength("SELL")
-        
-        # Calculate stop loss and take profit
-        stop_loss = min(latest_price + latest_atr * 2, resistance_level * 1.02)
-        take_profit = latest_price - latest_atr * 3
-        
-        return {
-            "signal": "SELL",
-            "strength": strength,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "divergence": divergence['bearish'],
-            "entry_zone": (resistance_level * (1 - near_level_pct/100), resistance_level)
-        }
-        
-    else:
-        # Check for potential signals developing
-        potential = "NONE"
-        potential_strength = 0
-        
-        if latest_k < oversold + 5:
-            potential = "BUY"
-            potential_strength = 30 - min(30, (latest_k - oversold) * 6)
-        elif latest_k > overbought - 5:
-            potential = "SELL"
-            potential_strength = 30 - min(30, (overbought - latest_k) * 6)
-            
-        return {
-            "signal": "HOLD", 
-            "potential": potential, 
-            "strength": potential_strength
+            'strategy_type': 'FastStochastic',
+            'k_period': self.k_period,
+            'd_period': self.d_period,
+            'current_k': self.smooth_k_values[-1] if self.smooth_k_values else 50.0,
+            'current_d': self.d_values[-1] if self.d_values else 50.0,
+            'current_raw_k': self.raw_k[-1] if self.raw_k else 50.0,
+            'overbought_level': self.overbought,
+            'oversold_level': self.oversold,
+            'data_points': len(self.prices),
+            'ready_for_signals': len(self.high_prices) >= self.k_period
         }

@@ -1,10 +1,10 @@
 from manager import kite_manager
-from strategies.rsi_strategy import rsi_strategy_with_filters
-from strategies.moving_average_strategy import moving_average_strategy_with_filters
-from strategies.bollinger_bands_strategy import bollinger_bands_strategy_with_rsi
-from strategies.macd_strategy import macd_strategy_with_filters
-from strategies.stochastic_oscillator_strategy import stochastic_oscillator_strategy_with_filters
-from strategies.vwap_strategy import vwap_strategy_with_filters
+from strategies.rsi_strategy import FastRSIStrategy
+from strategies.moving_average_strategy import FastMovingAverageStrategy
+from strategies.bollinger_bands_strategy import FastBollingerBandsStrategy
+from strategies.macd_strategy import FastMACDStrategy
+from strategies.stochastic_oscillator_strategy import FastStochasticStrategy
+from strategies.vwap_strategy import FastVWAPStrategy
 import pandas as pd
 import time
 from datetime import datetime, timedelta
@@ -21,6 +21,16 @@ from utils.risk_manager import (
 
 # Initialize enhanced logger
 logger = Logger(console_output=True, file_output=True)
+
+# Initialize strategy instances (global for performance)
+strategy_instances = {
+    'RSI': FastRSIStrategy(),
+    'MovingAverage': FastMovingAverageStrategy(),
+    'BollingerBands': FastBollingerBandsStrategy(),
+    'MACD': FastMACDStrategy(),
+    'StochasticOscillator': FastStochasticStrategy(),
+    'VWAP': FastVWAPStrategy()
+}
 
 # Initialize Kite Connect
 # kite = KiteConnect(api_key="your_api_key")
@@ -65,8 +75,8 @@ def fetch_real_time_data(stock_symbols, interval="5minute", days=1):
             ltp_data = kite_manager.get_ltp(ltp_request)
             for stock_symbol in stock_symbols:
                 ltp_key = f"NSE:{stock_symbol}"
-                if ltp_key in ltp_data:
-                    ltp = ltp_data[ltp_key]["last_price"]
+                if isinstance(ltp_data, dict) and ltp_key in ltp_data:
+                    ltp = ltp_data[ltp_key].get("last_price", 0)
                     stock_data[stock_symbol] = {"ltp": ltp}
                 else:
                     logger.warning(f"LTP not found for {stock_symbol}")
@@ -95,7 +105,7 @@ def fetch_real_time_data(stock_symbols, interval="5minute", days=1):
                     )
 
                     # Validate and store historical data
-                    if not historical_data or len(historical_data) == 0:
+                    if historical_data is None or len(historical_data) == 0:
                         logger.warning(f"No historical data fetched for {stock_symbol}")
                         stock_data[stock_symbol]["historical_data"] = None
                     else:
@@ -250,62 +260,50 @@ def process_stock(stock_symbol, stock_data):
         return stock_symbol, {"signal": "HOLD", "strength": 0, "reason": "DATA_ISSUE"}
 
     try:
-        # Run enhanced strategies
+        # Process each tick through the fast strategies
         strategy_signals = {}
         
-        # RSI Strategy
-        try:
-            rsi_result = rsi_strategy_with_filters(df)
-            strategy_signals["RSI"] = rsi_result
-        except Exception as e:
-            logger.error(f"Error in RSI strategy for {stock_symbol}: {e}")
-            strategy_signals["RSI"] = {"signal": "ERROR", "strength": 0}
+        # Reset strategy instances for new stock
+        for strategy in strategy_instances.values():
+            strategy.reset_daily_counters()
         
-        # Moving Average Strategy
-        try:
-            ma_result = moving_average_strategy_with_filters(df)
-            strategy_signals["MovingAverage"] = ma_result
-        except Exception as e:
-            logger.error(f"Error in Moving Average strategy for {stock_symbol}: {e}")
-            strategy_signals["MovingAverage"] = {"signal": "ERROR", "strength": 0}
-        
-        # Bollinger Bands Strategy
-        try:
-            bb_result = bollinger_bands_strategy_with_rsi(df)
-            strategy_signals["BollingerBands"] = bb_result
-        except Exception as e:
-            logger.error(f"Error in Bollinger Bands strategy for {stock_symbol}: {e}")
-            strategy_signals["BollingerBands"] = {"signal": "ERROR", "strength": 0}
-        
-        # MACD Strategy
-        try:
-            macd_result = macd_strategy_with_filters(df)
-            strategy_signals["MACD"] = macd_result
-        except Exception as e:
-            logger.error(f"Error in MACD strategy for {stock_symbol}: {e}")
-            strategy_signals["MACD"] = {"signal": "ERROR", "strength": 0}
-        
-        # Stochastic Oscillator Strategy
-        try:
-            # Dynamically calculate support and resistance
-            lowest_low = df['low'].iloc[-20:].min()
-            highest_high = df['high'].iloc[-20:].max()
+        # Process historical data through strategies to build up state
+        for _, row in df.iterrows():
+            price = row['close']
+            volume = row.get('volume', 0)
+            high = row.get('high', price)
+            low = row.get('low', price)
             
-            stoch_result = stochastic_oscillator_strategy_with_filters(
-                df, support_level=lowest_low, resistance_level=highest_high
-            )
-            strategy_signals["StochasticOscillator"] = stoch_result
-        except Exception as e:
-            logger.error(f"Error in Stochastic Oscillator strategy for {stock_symbol}: {e}")
-            strategy_signals["StochasticOscillator"] = {"signal": "ERROR", "strength": 0}
+            for name, strategy in strategy_instances.items():
+                try:
+                    if name in ['MovingAverage', 'VWAP', 'StochasticOscillator']:
+                        # These strategies need high/low data
+                        result = strategy.add_tick(price, volume, high=high, low=low)
+                    else:
+                        # Other strategies only need price and volume
+                        result = strategy.add_tick(price, volume)
+                except Exception as e:
+                    logger.error(f"Error processing tick for {name} strategy on {stock_symbol}: {e}")
         
-        # VWAP Strategy
-        try:
-            vwap_result = vwap_strategy_with_filters(df)
-            strategy_signals["VWAP"] = vwap_result
-        except Exception as e:
-            logger.error(f"Error in VWAP strategy for {stock_symbol}: {e}")
-            strategy_signals["VWAP"] = {"signal": "ERROR", "strength": 0}
+        # Get final signals from each strategy
+        for name, strategy in strategy_instances.items():
+            try:
+                # Get the last result as the final signal
+                final_price = df['close'].iloc[-1]
+                final_volume = df.get('volume', pd.Series([0])).iloc[-1]
+                
+                if name in ['MovingAverage', 'VWAP', 'StochasticOscillator']:
+                    final_high = df.get('high', pd.Series([final_price])).iloc[-1]
+                    final_low = df.get('low', pd.Series([final_price])).iloc[-1]
+                    result = strategy.add_tick(final_price, final_volume, high=final_high, low=final_low)
+                else:
+                    result = strategy.add_tick(final_price, final_volume)
+                
+                strategy_signals[name] = result
+                
+            except Exception as e:
+                logger.error(f"Error getting final signal from {name} strategy for {stock_symbol}: {e}")
+                strategy_signals[name] = {"signal": "ERROR", "strength": 0}
             
         # Aggregate signals from all strategies
         aggregated_signal = aggregate_signals(strategy_signals)

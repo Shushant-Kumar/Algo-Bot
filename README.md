@@ -1,23 +1,122 @@
-# Algo-Bot
+# Production-Ready Algorithmic Trading System
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)
+![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Python](https://img.shields.io/badge/python-3.8%2B-brightgreen.svg)
+![Status](https://img.shields.io/badge/status-production--ready-success.svg)
 
-Algo-Bot is a comprehensive algorithmic trading system designed to analyze market data, implement various trading strategies, and execute trades automatically. It connects to the Zerodha trading platform to fetch real-time market data and place orders based on technical indicators and risk management rules.
+A high-performance, enterprise-grade algorithmic trading system optimized for fast intraday trading with Zerodha Kite API. Features advanced strategies, real-time monitoring, comprehensive risk management, and production-ready security.
+
+## 🚀 Key Features
+
+### Trading & Strategy Management
+- **Fast Strategy Execution**: Optimized base classes with O(1) mathematical operations
+- **Multiple Strategies**: Bollinger Bands, RSI, MACD, Moving Average, Stochastic, VWAP
+- **Real-time Data Processing**: High-frequency data ingestion and analysis
+- **Advanced Order Management**: Smart order routing with circuit breakers
+- **Risk Management**: Position sizing, daily loss limits, exposure controls
+
+### Security & Authentication
+- **Secure Token Management**: AES-256 encrypted token storage
+- **Automatic Token Refresh**: Intelligent token caching and validation
+- **Environment Protection**: Secure credential management with .env files
+- **Production Security**: File permissions, checksums, encryption keys
+
+### Performance & Monitoring
+- **Multi-threading Support**: Concurrent strategy execution
+- **Real-time Monitoring**: Live performance metrics and health checks
+- **Comprehensive Logging**: Structured logging with multiple levels
+- **Database Integration**: PostgreSQL, MongoDB, Redis support
+- **API Rate Limiting**: Intelligent request throttling
+
+### Production Features
+- **Market Hours Validation**: Trading session awareness
+- **Circuit Breakers**: Automatic trading halts on anomalies
+- **Position Tracking**: Real-time P&L monitoring
+- **Deployment Ready**: Docker, Gunicorn, Supervisor integration
+- **Error Recovery**: Automatic retry mechanisms and fallback systems
 
 ## Table of Contents
 
-- [Features](#features)
+- [Quick Start](#quick-start)
 - [Trading Strategies](#trading-strategies)
-- [Getting Started](#getting-started)
-- [Usage](#usage)
+- [Production Setup](#production-setup)
+- [Configuration](#configuration)
+- [API Documentation](#api-documentation)
 - [Project Structure](#project-structure)
+- [Deployment](#deployment)
 - [Contributing](#contributing)
-- [Roadmap](#roadmap)
 - [License](#license)
-- [Acknowledgments](#acknowledgments)
 
-## Features
+## 🚀 Quick Start
+
+### 1. One-Command Setup
+```bash
+# Clone and setup
+git clone https://github.com/Shushant-Kumar/Algo-Bot.git
+cd Algo-Bot
+pip install -r requirements.txt
+
+# Quick authentication and testing
+python quick_start.py
+```
+
+### 2. Secure Authentication
+```bash
+# First-time setup with secure authentication
+python zerodha_integration.py
+```
+
+### 3. Production Trading
+```bash
+# Start the production trading system
+python main.py
+```
+
+## 🔐 Secure Authentication Setup
+
+Our production-ready authentication system provides enterprise-grade security:
+
+### Features
+- **AES-256 Encryption**: All tokens encrypted at rest
+- **Automatic Validation**: Token integrity and expiration checks  
+- **Secure Storage**: Restricted file permissions and secure cache
+- **Retry Logic**: Robust authentication with automatic retries
+
+### Setup Process
+1. **Copy Environment Template**:
+   ```bash
+   cp .env.template .env
+   ```
+
+2. **Add Your Credentials** (edit `.env`):
+   ```env
+   KITE_API_KEY=your_api_key_here
+   KITE_API_SECRET=your_api_secret_here
+   ```
+
+3. **Run Authentication**:
+   ```bash
+   python zerodha_integration.py
+   ```
+
+4. **Follow Browser Instructions**:
+   - Visit the generated login URL
+   - Authorize the application
+   - Copy the request token
+   - Paste when prompted
+
+### Integration Example
+```python
+from zerodha_integration import get_authenticated_kite
+from manager import AdvancedKiteManager
+
+# Get authenticated connection
+kite = get_authenticated_kite()
+if kite:
+    manager = AdvancedKiteManager(kite)
+    # Ready for trading!
+```
 
 - Integration with Zerodha trading platform
 - Multiple technical indicator-based strategies

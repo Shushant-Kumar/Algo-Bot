@@ -1,30 +1,147 @@
-# API and networking
-requests==2.28.1
-kiteconnect==4.0.0
+# =====================================================
+# Production-Ready Algorithmic Trading System Requirements
+# =====================================================
+
+# Core API and Networking
+requests==2.31.0
+kiteconnect==4.2.0
 python-dotenv==1.0.0
+urllib3==2.0.7
+certifi==2023.11.17
 
-# Data processing
-pandas==2.0.3
-numpy==1.24.3
+# Data Processing and Analysis
+pandas==2.1.4
+numpy==1.24.4
+scipy==1.11.4
 
-# Technical analysis
+# Technical Analysis Libraries
 ta==0.10.2
 pandas-ta==0.3.14b0
+talib-binary==0.4.19  # Technical Analysis Library with C extensions for speed
+yfinance==0.2.28  # Backup data source
 
-# Scheduling and timing
+# High-Performance Computing
+numba==0.58.1  # JIT compilation for numerical functions
+cython==3.0.6  # C extensions for performance-critical code
+
+# Scheduling and Timing
 schedule==1.2.0
 pytz==2023.3
 python-dateutil==2.8.2
+croniter==2.0.1  # Advanced cron-style scheduling
 
-# Visualization (optional for backtesting)
-matplotlib==3.7.2
-seaborn==0.12.2
-plotly==5.15.0
+# Async and Concurrency
+asyncio-throttle==1.0.2
+aiohttp==3.9.1
+uvloop==0.19.0  # High-performance event loop (Unix only)
 
-# Utilities
-tqdm==4.65.0
+# Database and Storage
+sqlite3  # Built-in, but listing for clarity
+sqlalchemy==2.0.23  # Database ORM
+redis==5.0.1  # In-memory data structure store
+pymongo==4.6.0  # MongoDB driver (optional)
+
+# Configuration Management
+pydantic==2.5.2  # Data validation and settings management
+configparser  # Built-in configuration parser
+jsonschema==4.20.0  # JSON schema validation
+
+# Logging and Monitoring
+loguru==0.7.2
+structlog==23.2.0  # Structured logging
+sentry-sdk==1.38.0  # Error tracking and monitoring
+prometheus-client==0.19.0  # Metrics collection
+
+# Financial Data and Calculations
+empyrical==0.5.5  # Financial risk metrics
+pyfolio==0.9.2  # Portfolio performance analysis
+zipline-reloaded==3.0.4  # Backtesting framework
+quantlib==1.32  # Quantitative finance library
+
+# Machine Learning (Optional)
+scikit-learn==1.3.2
+xgboost==2.0.3
+lightgbm==4.1.0
+
+# Visualization and Reporting
+matplotlib==3.8.2
+seaborn==0.13.0
+plotly==5.17.0
+dash==2.14.2  # Interactive web apps
+bokeh==3.3.2  # Interactive visualization
+
+# Utilities and Performance
+tqdm==4.66.1
 tabulate==0.9.0
-loguru==0.7.0
+memory-profiler==0.61.0  # Memory usage monitoring
+psutil==5.9.6  # System and process utilities
+cachetools==5.3.2  # Caching utilities
 
-# Testing
-pytest==7.3.1
+# Data Validation and Serialization
+marshmallow==3.20.1  # Serialization library
+jsonpickle==3.0.2  # JSON serialization for complex objects
+
+# Networking and WebSockets
+websocket-client==1.6.4
+websockets==12.0
+python-socketio==5.10.0
+
+# Security and Encryption
+cryptography==41.0.8
+bcrypt==4.1.2
+keyring==24.3.0  # Secure credential storage
+
+# Development and Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+pytest-xdist==3.5.0  # Parallel test execution
+black==23.11.0  # Code formatting
+flake8==6.1.0  # Code linting
+mypy==1.7.1  # Static type checking
+isort==5.12.0  # Import sorting
+
+# Documentation
+sphinx==7.2.6
+sphinx-rtd-theme==1.3.0
+
+# Deployment and Production
+gunicorn==21.2.0  # WSGI HTTP Server
+supervisor==4.2.5  # Process control system
+docker==6.1.3  # Docker integration
+
+# Optional High-Performance Libraries
+# Uncomment these for maximum performance on compatible systems
+# intel-numpy==1.24.4  # Intel-optimized NumPy
+# intel-scipy==1.11.4  # Intel-optimized SciPy
+# mkl==2023.2.0  # Intel Math Kernel Library
+
+# Platform-specific optimizations
+# Windows: pywin32==306
+# Linux: python-prctl==1.8.1
+
+# =====================================================
+# Installation Notes:
+# 
+# 1. For production deployment:
+#    pip install -r requirements.txt
+#
+# 2. For development:
+#    pip install -r requirements.txt
+#    pip install -e .
+#
+# 3. For high-performance trading:
+#    - Install Intel MKL libraries
+#    - Use Python 3.11+ for best performance
+#    - Consider using PyPy for CPU-intensive tasks
+#
+# 4. Platform-specific notes:
+#    - Windows: Install Visual C++ Build Tools
+#    - Linux: Install build-essential, python3-dev
+#    - macOS: Install Xcode command line tools
+#
+# 5. Optional GPU acceleration:
+#    - cupy-cuda11x for NVIDIA GPUs
+#    - rapids-cudf for GPU DataFrame operations
+# =====================================================

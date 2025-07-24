@@ -1,8 +1,26 @@
+"""
+Production-Ready Logging Module
+
+This module provides comprehensive logging capabilities for algorithmic trading systems,
+including trade logging, performance tracking, and error monitoring.
+
+Features:
+- Multi-level logging (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- JSON and text format support
+- Trade-specific logging with performance metrics
+- Thread-safe operations
+- Automatic log rotation and archiving
+- Real-time performance monitoring
+"""
+
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 import traceback
+import threading
+from collections import deque
+import time
 
 class LogLevel(Enum):
     DEBUG = 0
@@ -12,10 +30,12 @@ class LogLevel(Enum):
     CRITICAL = 4
 
 class Logger:
+    """Enhanced logging system for production trading applications."""
+    
     def __init__(self, log_dir='logs', console_output=True, file_output=True, 
-                 json_format=False, log_level=LogLevel.INFO):
+                 json_format=False, log_level=LogLevel.INFO, max_log_size_mb=50):
         """
-        Initialize logger with configuration options.
+        Initialize logger with enhanced configuration options.
         
         Parameters:
         - log_dir: Directory to store log files
@@ -23,12 +43,21 @@ class Logger:
         - file_output: Whether to write logs to file
         - json_format: Whether to format logs as JSON
         - log_level: Minimum log level to record
+        - max_log_size_mb: Maximum log file size before rotation
         """
         self.log_dir = log_dir
         self.console_output = console_output
         self.file_output = file_output
         self.json_format = json_format
         self.log_level = log_level
+        self.max_log_size = max_log_size_mb * 1024 * 1024  # Convert to bytes
+        
+        # Thread safety
+        self.lock = threading.Lock()
+        
+        # Performance monitoring
+        self.recent_logs = deque(maxlen=1000)  # Keep last 1000 log entries
+        self.start_time = time.time()
         
         # Create log directory if it doesn't exist
         if self.file_output:
@@ -45,7 +74,46 @@ class Logger:
             'wins': 0,
             'losses': 0,
             'profit_loss': 0.0,
+            'start_time': datetime.now(),
+            'last_trade_time': None
         }
+    
+    def _rotate_log_if_needed(self, log_file):
+        """Rotate log file if it exceeds maximum size."""
+        try:
+            if os.path.exists(log_file) and os.path.getsize(log_file) > self.max_log_size:
+                # Create backup filename with timestamp
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                backup_file = f"{log_file}.{timestamp}.bak"
+                os.rename(log_file, backup_file)
+                
+                # Keep only last 5 backup files
+                self._cleanup_old_backups(log_file)
+        except Exception as e:
+            print(f"Error rotating log file: {e}")
+    
+    def _cleanup_old_backups(self, log_file, keep_count=5):
+        """Remove old backup files, keeping only the most recent ones."""
+        try:
+            log_dir = os.path.dirname(log_file)
+            base_name = os.path.basename(log_file)
+            
+            # Find all backup files
+            backup_files = []
+            for filename in os.listdir(log_dir):
+                if filename.startswith(base_name) and filename.endswith('.bak'):
+                    backup_path = os.path.join(log_dir, filename)
+                    backup_files.append((backup_path, os.path.getmtime(backup_path)))
+            
+            # Sort by modification time (newest first)
+            backup_files.sort(key=lambda x: x[1], reverse=True)
+            
+            # Remove old backups
+            for backup_path, _ in backup_files[keep_count:]:
+                os.remove(backup_path)
+                
+        except Exception as e:
+            print(f"Error cleaning up backup files: {e}")
     
     def _get_log_file(self, strategy=None):
         """Get the appropriate log file path based on date and strategy."""
@@ -78,17 +146,32 @@ class Logger:
         if level.value < self.log_level.value:
             return
         
-        formatted_message = self._format_message(level, message, strategy, extra)
-        
-        # Print to console if enabled
-        if self.console_output:
-            print(formatted_message)
-        
-        # Write to file if enabled
-        if self.file_output:
-            log_file = self._get_log_file(strategy)
-            with open(log_file, 'a') as f:
-                f.write(f"{formatted_message}\n")
+        with self.lock:
+            formatted_message = self._format_message(level, message, strategy, extra)
+            
+            # Add to recent logs for monitoring
+            log_entry = {
+                'timestamp': time.time(),
+                'level': level.name,
+                'message': message,
+                'strategy': strategy
+            }
+            self.recent_logs.append(log_entry)
+            
+            # Print to console if enabled
+            if self.console_output:
+                print(formatted_message)
+            
+            # Write to file if enabled
+            if self.file_output:
+                try:
+                    log_file = self._get_log_file(strategy)
+                    self._rotate_log_if_needed(log_file)
+                    
+                    with open(log_file, 'a', encoding='utf-8') as f:
+                        f.write(f"{formatted_message}\n")
+                except Exception as e:
+                    print(f"Error writing to log file: {e}")
     
     def debug(self, message, strategy=None, extra=None):
         """Log a debug message."""
